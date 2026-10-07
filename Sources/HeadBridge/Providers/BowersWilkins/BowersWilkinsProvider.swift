@@ -17,6 +17,43 @@ enum ANCMode: Int, CaseIterable, Identifiable {
     }
 }
 
+/// Wire values of the ANC mode differ between hardware generations, so the
+/// provider translates `ANCMode` through the profile of the connected device.
+enum ANCWireProfile: Equatable {
+    /// Hardware-verified on Px7 S3: off 0, noise cancellation 1, pass-through 2.
+    case standard
+    /// Hardware-verified on the original Px8 (RPC software `0(20.0.2.0)`):
+    /// off 1, noise cancellation 2, pass-through 3. The device rejects 0.
+    case originalPx8
+    /// A generically advertised model whose values have not been confirmed on
+    /// hardware. Noise control stays hidden and nothing is written.
+    case unverified
+
+    func wireValue(for mode: ANCMode) -> Int? {
+        switch (self, mode) {
+        case (.standard, _): mode.rawValue
+        case (.originalPx8, .off): 1
+        case (.originalPx8, .noiseCancellation): 2
+        case (.originalPx8, .passThrough): 3
+        case (.unverified, _): nil
+        }
+    }
+
+    func mode(forWireValue value: Int) -> ANCMode? {
+        switch self {
+        case .standard: ANCMode(rawValue: value)
+        case .originalPx8:
+            switch value {
+            case 1: .off
+            case 2: .noiseCancellation
+            case 3: .passThrough
+            default: nil
+            }
+        case .unverified: nil
+        }
+    }
+}
+
 enum CustomButtonMode: Int, CaseIterable, Identifiable {
     case anc = 0
     case voiceAssistant = 1
@@ -60,6 +97,9 @@ private struct BWRestorableProfile: Codable, Equatable {
     var noiseMode: Int
     var equalizer: [Int]
     var equalizerBypassed: Bool
+    // Optional so profiles saved before bass/treble support still decode.
+    var bass: Int?
+    var treble: Int?
     var wearSensorEnabled: Bool
     var wearSensitivity: Int
     var standbyMinutes: Int
@@ -268,10 +308,14 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
     @Published private(set) var connectedName = "B&W Headphones"
 
     @Published private(set) var ancMode: ANCMode = .off
+    private var ancWireProfile: ANCWireProfile = .standard
+    private var connectedAdvertisedName: String?
     @Published private(set) var batteryPercent: Int?
     @Published private(set) var isCharging: Bool?
     @Published private(set) var eqValues = [0, 0, 0, 0, 0]
     @Published private(set) var eqBypassed = true
+    @Published private(set) var bassLevel = 0
+    @Published private(set) var trebleLevel = 0
     @Published private(set) var wearSensorEnabled = false
     @Published private(set) var wearSensitivity = 2
     @Published private(set) var sleepMinutes = 0
@@ -312,6 +356,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
     private var pendingConnection: (item: DiscoveredPeripheral, automatically: Bool)?
     private var scanTimeoutWorkItem: DispatchWorkItem?
     private var scanGeneration = 0
+    private var scanStartedAt: Date?
     private var connectionTimeoutWorkItem: DispatchWorkItem?
     private var connectionAttemptGeneration = 0
     private var transportGeneration = 0
@@ -400,6 +445,13 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
 
         let expectedScanGeneration = scanGeneration
+        scanStartedAt = Date()
+        // Advertisements arrive one at a time. Give a model-named one the
+        // chance to arrive before a generic candidate is accepted.
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.genericFallbackGrace) { [weak self] in
+            guard let self, self.scanGeneration == expectedScanGeneration else { return }
+            self.tryAutomaticConnection()
+        }
         let timeout = DispatchWorkItem { [weak self] in
             Task { @MainActor in
                 guard let self,
@@ -432,6 +484,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
 
         if names != audioConnectedDeviceNames {
             audioConnectedDeviceNames = names
+            refreshANCWireProfile()
             automaticConnection.resetCandidates()
             automaticConnection.isSuppressed = false
             cancelAutomaticReconnect()
@@ -492,7 +545,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
 
         switch item.peripheral.state {
         case .connected:
-            connectedName = item.name
+            adoptIdentity(of: item)
             bindPeripheral(item.peripheral)
             phase = .discovering
             addLog(.info, "Reusing the existing BLE link to \(item.name)")
@@ -505,7 +558,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
             item.peripheral.discoverServices(nil)
             return
         case .connecting:
-            connectedName = item.name
+            adoptIdentity(of: item)
             bindPeripheral(item.peripheral)
             phase = .connecting
             addLog(.info, "A BLE connection to \(item.name) is already pending")
@@ -536,7 +589,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
             return
         }
 
-        connectedName = item.name
+        adoptIdentity(of: item)
         bindPeripheral(item.peripheral)
         phase = .connecting
         addLog(.info, "\(automatically ? "Auto-connecting" : "Connecting") to \(item.name)")
@@ -568,15 +621,23 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
             !audioConnectedDeviceNames.isEmpty
         else { return }
 
+        // A model-named advertisement is the stronger match. A generic
+        // advertisement carries no model, so it is only a fallback while a
+        // supported Core Audio route is present, and only once a model-named
+        // one has had time to arrive; the RPC characteristics remain the final
+        // compatibility check.
+        let candidates = discovered.values
+            .sorted(by: { $0.rssi > $1.rssi })
+            .filter { !automaticConnection.hasAttempted($0.id) }
+        let allowsGenericFallback = Self.allowsGenericFallback(scanStartedAt: scanStartedAt, now: Date())
         guard
-            let item = discovered.values
-                .sorted(by: { $0.rssi > $1.rssi })
-                .first(where: { candidate in
-                    !automaticConnection.hasAttempted(candidate.id)
-                        && audioConnectedDeviceNames.contains {
-                            BluetoothDeviceNameMatcher.matches($0, candidate.name)
-                        }
-                })
+            let item = candidates.first(where: { candidate in
+                audioConnectedDeviceNames.contains {
+                    BluetoothDeviceNameMatcher.matches($0, candidate.name)
+                }
+            })
+                ?? (allowsGenericFallback
+                    ? candidates.first(where: { Self.isGenericAdvertisedName($0.name) }) : nil)
         else { return }
 
         automaticConnection.markAttempted(item.id)
@@ -607,6 +668,65 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         return ["px7", "px8", "pi5", "pi6", "pi7", "pi8"].contains {
             normalized.contains($0)
         }
+    }
+
+    /// Some headphones advertise over BLE under a shared vendor name instead
+    /// of their model name. Hardware-verified: the original Px8 advertises as
+    /// `LE_BWHP` while Core Audio reports `Px8`.
+    static func isGenericAdvertisedName(_ name: String) -> Bool {
+        BluetoothDeviceNameMatcher.normalized(name) == "lebwhp"
+    }
+
+    /// How long a scan must have run before a generic advertisement may be
+    /// chosen automatically.
+    static let genericFallbackGrace: TimeInterval = 2
+
+    static func allowsGenericFallback(scanStartedAt: Date?, now: Date) -> Bool {
+        guard let scanStartedAt else { return true }
+        return now.timeIntervalSince(scanStartedAt) >= genericFallbackGrace
+    }
+
+    static func isDiscoverableAdvertisedName(_ name: String) -> Bool {
+        isSupportedHeadphoneName(name) || isGenericAdvertisedName(name)
+    }
+
+    private func adoptIdentity(of item: DiscoveredPeripheral) {
+        connectedName = displayName(for: item)
+        connectedAdvertisedName = item.name
+        refreshANCWireProfile()
+    }
+
+    /// Re-evaluated when the Core Audio outputs change, because a manual
+    /// connection can start before the audio route is known.
+    private func refreshANCWireProfile() {
+        guard let connectedAdvertisedName else { return }
+        ancWireProfile = Self.ancWireProfile(
+            advertisedName: connectedAdvertisedName,
+            audioDeviceNames: audioConnectedDeviceNames
+        )
+    }
+
+    /// A generic advertisement does not identify the model, so the Px8 values
+    /// apply only when the one connected Bowers & Wilkins audio output is an
+    /// original Px8. Any other generically advertised model is unverified.
+    static func ancWireProfile(advertisedName: String, audioDeviceNames: [String]) -> ANCWireProfile {
+        guard isGenericAdvertisedName(advertisedName) else { return .standard }
+        guard audioDeviceNames.count == 1, let audioName = audioDeviceNames.first,
+            isOriginalPx8Name(audioName)
+        else { return .unverified }
+        return .originalPx8
+    }
+
+    static func isOriginalPx8Name(_ name: String) -> Bool {
+        ["px8", "bowerswilkinspx8"].contains(BluetoothDeviceNameMatcher.normalized(name))
+    }
+
+    private func displayName(for item: DiscoveredPeripheral) -> String {
+        guard Self.isGenericAdvertisedName(item.name),
+            audioConnectedDeviceNames.count == 1,
+            let audioName = audioConnectedDeviceNames.first
+        else { return item.name }
+        return audioName
     }
 
     private func scheduleAutomaticReconnect() {
@@ -707,8 +827,9 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
     }
 
     func setANC(_ mode: ANCMode) {
+        guard let wireValue = ancWireProfile.wireValue(for: mode) else { return }
         ancMode = mode
-        send(BWRPCatalog.ancSet, payload: .int(Int64(mode.rawValue)))
+        send(BWRPCatalog.ancSet, payload: .int(Int64(wireValue)))
         refresh(BWRPCatalog.ancGet)
         persistDesiredProfile()
     }
@@ -728,6 +849,52 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         eqBypassed = bypassed
         send(BWRPCatalog.eqBypassSet, payload: .bool(bypassed))
         refresh(BWRPCatalog.eqBypassGet)
+        persistDesiredProfile()
+    }
+
+    /// Two-band tone control used by headphones without the five-band EQ.
+    static let toneRange = -60...60
+
+    var supportsToneControls: Bool {
+        Self.supportsToneControls(
+            bassError: readings[BWRPCatalog.bassGet.key]?.errorCode,
+            trebleError: readings[BWRPCatalog.trebleGet.key]?.errorCode
+        )
+    }
+
+    /// Both reads must have answered with device error `0`.
+    static func supportsToneControls(bassError: UInt16?, trebleError: UInt16?) -> Bool {
+        bassError == 0 && trebleError == 0
+    }
+
+    /// Accepts only an in-range integer reply; anything else leaves the
+    /// published level unchanged.
+    static func toneLevel(from payload: MessagePackValue) -> Int? {
+        guard let value = payload.intValue, toneRange.contains(value) else { return nil }
+        return value
+    }
+
+    static func clampedTone(_ value: Int) -> Int {
+        min(toneRange.upperBound, max(toneRange.lowerBound, value))
+    }
+
+    func setBassLevel(_ value: Int) {
+        bassLevel = Self.clampedTone(value)
+    }
+
+    func setTrebleLevel(_ value: Int) {
+        trebleLevel = Self.clampedTone(value)
+    }
+
+    func commitBass() {
+        send(BWRPCatalog.bassSet, payload: .int(Int64(bassLevel)))
+        refresh(BWRPCatalog.bassGet)
+        persistDesiredProfile()
+    }
+
+    func commitTreble() {
+        send(BWRPCatalog.trebleSet, payload: .int(Int64(trebleLevel)))
+        refresh(BWRPCatalog.trebleGet)
         persistDesiredProfile()
     }
 
@@ -803,8 +970,16 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         if enabled { scheduleProfileRestore() }
     }
 
+    /// Renaming is offered only for model-named advertisers. It has not been
+    /// tested on a generically advertised model, where the Core Audio name
+    /// also selects the ANC wire profile.
+    static func allowsRename(advertisedName: String?) -> Bool {
+        guard let advertisedName else { return false }
+        return !isGenericAdvertisedName(advertisedName)
+    }
+
     func commitLocalName() {
-        guard !localName.isEmpty else { return }
+        guard !localName.isEmpty, Self.allowsRename(advertisedName: connectedAdvertisedName) else { return }
         send(BWRPCatalog.nameSet, payload: .string(localName))
         refresh(BWRPCatalog.nameGet)
     }
@@ -1021,6 +1196,8 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         isCharging = nil
         eqValues = [0, 0, 0, 0, 0]
         eqBypassed = true
+        bassLevel = 0
+        trebleLevel = 0
         wearSensorEnabled = false
         wearSensitivity = 2
         sleepMinutes = 0
@@ -1115,6 +1292,14 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         if supported.contains(.equalizer), profile.equalizerBypassed != eqBypassed {
             setEQBypassed(profile.equalizerBypassed)
         }
+        if supportsToneControls, let bass = profile.bass.map(Self.clampedTone), bass != bassLevel {
+            bassLevel = bass
+            commitBass()
+        }
+        if supportsToneControls, let treble = profile.treble.map(Self.clampedTone), treble != trebleLevel {
+            trebleLevel = treble
+            commitTreble()
+        }
         if supported.contains(.wearSensor), profile.wearSensorEnabled != wearSensorEnabled {
             setWearSensor(profile.wearSensorEnabled)
         }
@@ -1149,6 +1334,8 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
                 noiseMode: ancMode.rawValue,
                 equalizer: eqValues,
                 equalizerBypassed: eqBypassed,
+                bass: supportsToneControls ? bassLevel : nil,
+                treble: supportsToneControls ? trebleLevel : nil,
                 wearSensorEnabled: wearSensorEnabled,
                 wearSensitivity: wearSensitivity,
                 standbyMinutes: sleepMinutes,
@@ -1185,13 +1372,17 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         let key = message.command.key
         switch key {
         case BWRPCatalog.ancGet.key:
-            if let value = payload.intValue, let mode = ANCMode(rawValue: value) { ancMode = mode }
+            if let value = payload.intValue, let mode = ancWireProfile.mode(forWireValue: value) { ancMode = mode }
         case BWRPCatalog.eqGet.key:
             if let values = payload.arrayValue?.compactMap(\.intValue), values.count >= 5 {
                 eqValues = Array(values.prefix(5))
             }
         case BWRPCatalog.eqBypassGet.key:
             if let value = payload.boolValue { eqBypassed = value }
+        case BWRPCatalog.bassGet.key:
+            if let value = Self.toneLevel(from: payload) { bassLevel = value }
+        case BWRPCatalog.trebleGet.key:
+            if let value = Self.toneLevel(from: payload) { trebleLevel = value }
         case BWRPCatalog.wearGet.key:
             if let value = payload.boolValue { wearSensorEnabled = value }
         case BWRPCatalog.wearSensitivityGet.key:
@@ -1512,14 +1703,12 @@ extension BowersWilkinsProvider: CBCentralManagerDelegate {
             guard self.central === central, self.phase == .scanning else { return }
             let advertised = advertisementData[CBAdvertisementDataLocalNameKey] as? String
             let name = advertised ?? peripheral.name ?? "Unnamed BLE device"
-            guard Self.isSupportedHeadphoneName(name) else { return }
+            guard Self.isDiscoverableAdvertisedName(name) else { return }
             let item = DiscoveredPeripheral(
                 id: peripheral.identifier, name: name, rssi: RSSI.intValue, peripheral: peripheral)
             discovered[peripheral.identifier] = item
             peripherals = discovered.values.sorted { $0.rssi > $1.rssi }
-            if selectedPeripheralID == nil,
-                Self.isSupportedHeadphoneName(name)
-            {
+            if selectedPeripheralID == nil {
                 selectedPeripheralID = peripheral.identifier
             }
             tryAutomaticConnection()
@@ -1638,14 +1827,16 @@ extension BowersWilkinsProvider: HeadphoneProvider {
 
         var result: HeadphoneCapabilities = []
         if supports(BWRPCatalog.batteryPercentageGet) { result.insert(.battery) }
-        if supports(BWRPCatalog.ancGet) { result.insert(.noiseControl) }
+        if supports(BWRPCatalog.ancGet), ancWireProfile != .unverified { result.insert(.noiseControl) }
         if supports(BWRPCatalog.eqGet) { result.insert(.equalizer) }
         if supports(BWRPCatalog.wearGet) { result.insert(.wearSensor) }
         if supports(BWRPCatalog.spatialEnabledGet) { result.insert(.spatialAudio) }
         if supports(BWRPCatalog.voiceGet) { result.insert(.voicePrompts) }
         if supports(BWRPCatalog.sleepGet) { result.insert(.standbyTimer) }
         if supports(BWRPCatalog.buttonGet) { result.insert(.customButton) }
-        if supports(BWRPCatalog.nameGet) { result.insert(.deviceName) }
+        if supports(BWRPCatalog.nameGet), Self.allowsRename(advertisedName: connectedAdvertisedName) {
+            result.insert(.deviceName)
+        }
         return result
     }
 

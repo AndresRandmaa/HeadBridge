@@ -3,6 +3,16 @@
 All notable user-visible changes will be documented here. HeadBridge follows
 [Semantic Versioning](https://semver.org/) once public releases begin.
 
+## Unreleased
+
+- Bowers & Wilkins: discover headphones that advertise over BLE under the
+  generic `LE_BWHP` name, hardware-tested with the original Px8.
+- Bowers & Wilkins: use the original Px8's ANC mode values, so Off, Noise
+  Cancellation, and Pass-Through select the correct mode.
+- Bowers & Wilkins: bass and treble sliders for headphones that have a two-band
+  tone control instead of the five-band EQ, hardware-tested with the original
+  Px8.
+
 ## 0.1.7 - 2026-08-16
 
 ### First public beta
