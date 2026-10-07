@@ -22,10 +22,29 @@ scan is not pre-empted. The required characteristics remain
 the compatibility check.
 
 A generic advertisement cannot distinguish two nearby headphones that both
-advertise this way: the strongest candidate is tried first. The headphone
-reports its Bluetooth address over RPC (`08:02`), which matches the paired
-audio device's address on the original Px8; HeadBridge does not yet use it to
-reject a mismatched peripheral.
+advertise this way, so the strongest candidate is tried first and checked
+afterwards. The headphone reports its Bluetooth address over RPC (`08:02`),
+and on the original Px8 it equals the paired audio device's address. For a
+generically advertised peripheral HeadBridge compares that address with the
+paired headphones macOS reports as connected and drops the link on a mismatch,
+before any restore profile is applied. When either side is unavailable the
+link is kept.
+
+The original Px8 advertises under a new BLE identifier after every connection,
+so a rejected peripheral cannot be recognised by identifier. Automatic
+connection therefore stops after three consecutive rejections until the audio
+route changes, Bluetooth restarts, or the user connects manually. HeadBridge
+does not yet try the other candidates of the same scan in turn.
+
+The comparison uses the paired-device inventory, which is refreshed in the
+background whenever the Core Audio device list changes. Someone who owns two
+generically advertised headphones and switches between them can therefore be
+compared against a list that still names the previous pair, and have the
+correct headphone dropped once. The next automatic attempt, about five seconds
+later, uses the refreshed list. HeadBridge does not refresh and re-check before
+dropping. The check is
+not applied to model-named advertisements, because the address equality has
+not been confirmed on those models.
 
 The RPC characteristic UUIDs currently used are:
 

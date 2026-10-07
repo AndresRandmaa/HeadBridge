@@ -16,7 +16,9 @@ All notable user-visible changes will be documented here. HeadBridge follows
   acknowledge it, and keep a confirmed control visible if a later read fails.
   Toggling the wear sensor on an original Px8 could bounce back or make the
   control disappear.
-
+- Bowers & Wilkins: for generically advertised headphones, drop the control
+  link when the headphone's reported Bluetooth address is not a connected
+  paired headphone, so a neighbour's headphones are not controlled by mistake.
 
 ## 0.1.7 - 2026-08-16
 

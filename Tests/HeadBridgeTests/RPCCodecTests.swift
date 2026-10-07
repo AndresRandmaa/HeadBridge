@@ -385,6 +385,59 @@ final class RPCCodecTests: XCTestCase {
         XCTAssertTrue(BowersWilkinsProvider.supportsToneControls(confirmed))
     }
 
+    @MainActor
+    func testGenericPeripheralAddressVerdict() {
+        // The original Px8 reports its address as text in this shape, while
+        // the macOS inventory uses colon- or hyphen-separated octets.
+        XCTAssertEqual(
+            BowersWilkinsProvider.addressVerdict(
+                reported: "aabb-cc-ddeeff", pairedConnected: ["AA:BB:CC:DD:EE:FF"]),
+            .matches
+        )
+        XCTAssertEqual(
+            BowersWilkinsProvider.addressVerdict(
+                reported: "AA:BB:CC:DD:EE:FF", pairedConnected: ["11-22-33-44-55-66", "aa-bb-cc-dd-ee-ff"]),
+            .matches
+        )
+        XCTAssertEqual(
+            BowersWilkinsProvider.addressVerdict(
+                reported: "AA:BB:CC:DD:EE:00", pairedConnected: ["AA:BB:CC:DD:EE:FF"]),
+            .mismatch
+        )
+        // Nothing can be concluded without both sides.
+        XCTAssertEqual(
+            BowersWilkinsProvider.addressVerdict(reported: "AA:BB:CC:DD:EE:FF", pairedConnected: []),
+            .unknown
+        )
+        XCTAssertEqual(
+            BowersWilkinsProvider.addressVerdict(reported: "—", pairedConnected: ["AA:BB:CC:DD:EE:FF"]),
+            .unknown
+        )
+        XCTAssertEqual(
+            BowersWilkinsProvider.addressVerdict(reported: "AA:BB:CC", pairedConnected: ["AA:BB:CC:DD:EE:FF"]),
+            .unknown
+        )
+        XCTAssertEqual(
+            BowersWilkinsProvider.addressVerdict(reported: "AA:BB:CC:DD:EE:FF", pairedConnected: ["garbage"]),
+            .unknown
+        )
+    }
+
+    func testIdentityRejectionsAreBounded() {
+        var limit = BWIdentityRejectionLimit()
+        XCTAssertFalse(limit.isExhausted)
+        for _ in 1..<BWIdentityRejectionLimit.maximumConsecutiveRejections {
+            limit.recordRejection()
+            XCTAssertFalse(limit.isExhausted)
+        }
+        limit.recordRejection()
+        XCTAssertTrue(limit.isExhausted)
+
+        limit.reset()
+        XCTAssertFalse(limit.isExhausted)
+        XCTAssertEqual(limit.consecutiveRejections, 0)
+    }
+
     func testConfirmedReadsSurviveALaterErrorReply() {
         var confirmed = BWConfirmedReads()
         let wear = BWRPCatalog.wearGet.key

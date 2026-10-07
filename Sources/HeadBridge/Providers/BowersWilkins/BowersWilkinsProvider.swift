@@ -125,6 +125,30 @@ struct BWConfirmedReads: Equatable {
     mutating func removeAll() { keys.removeAll() }
 }
 
+/// Result of comparing the Bluetooth address a headphone reports over RPC
+/// with the addresses of the paired headphones macOS currently has connected.
+enum BWPeripheralAddressVerdict: Equatable {
+    case matches
+    case mismatch
+    /// Either side is missing or unreadable, so nothing can be concluded.
+    case unknown
+}
+
+/// Bounds how often automatic connection may reach a headphone that turns out
+/// not to be the paired one. The original Px8 returns under a new BLE
+/// identifier after every connection, so a rejected peripheral cannot be
+/// recognised again by identifier and would otherwise be retried forever.
+struct BWIdentityRejectionLimit: Equatable {
+    static let maximumConsecutiveRejections = 3
+    private(set) var consecutiveRejections = 0
+
+    var isExhausted: Bool { consecutiveRejections >= Self.maximumConsecutiveRejections }
+
+    mutating func recordRejection() { consecutiveRejections += 1 }
+
+    mutating func reset() { consecutiveRejections = 0 }
+}
+
 struct BWRPCPendingWrite: Equatable {
     let commandKey: String
     let commandName: String
@@ -327,6 +351,9 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
     private var ancWireProfile: ANCWireProfile = .standard
     private var connectedAdvertisedName: String?
     private var confirmedReads = BWConfirmedReads()
+    private var connectedPairedAddresses: [String] = []
+    private var rejectedPeripheralIDs: Set<UUID> = []
+    private var identityRejections = BWIdentityRejectionLimit()
     @Published private(set) var batteryPercent: Int?
     @Published private(set) var isCharging: Bool?
     @Published private(set) var eqValues = [0, 0, 0, 0, 0]
@@ -488,8 +515,53 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
     func connectSelected() {
         guard let id = selectedPeripheralID, let item = discovered[id] else { return }
         automaticConnection.isSuppressed = false
+        identityRejections.reset()
         cancelAutomaticReconnect()
         connect(item, automatically: false)
+    }
+
+    func updateBluetoothPairedDevices(_ devices: [BluetoothPairedDevice]) {
+        connectedPairedAddresses =
+            devices
+            .filter { Self.isSupportedHeadphoneName($0.name) && ($0.isAudioConnected || $0.isConnected) }
+            .map(\.address)
+        verifyGenericPeripheralIdentity()
+    }
+
+    /// A generic advertisement does not say which headphone sent it, so a
+    /// neighbouring headphone can be the strongest candidate. Once the
+    /// headphone has reported its Bluetooth address, drop the link when that
+    /// address is not one of the paired headphones macOS has connected.
+    /// Limited to generic advertisers: the address equality is
+    /// hardware-verified on the original Px8 only.
+    private func verifyGenericPeripheralIdentity() {
+        guard isReady, let peripheral,
+            let connectedAdvertisedName, Self.isGenericAdvertisedName(connectedAdvertisedName)
+        else { return }
+        switch Self.addressVerdict(reported: macAddress, pairedConnected: connectedPairedAddresses) {
+        case .unknown:
+            return
+        case .matches:
+            identityRejections.reset()
+        case .mismatch:
+            addLog(
+                .info, "Control link reports \(macAddress), which is not a connected paired headphone; dropping it")
+            rejectedPeripheralIDs.insert(peripheral.identifier)
+            identityRejections.recordRejection()
+            if identityRejections.isExhausted {
+                // Stay disconnected until the audio route changes, Bluetooth
+                // restarts, or the user connects manually.
+                automaticConnection.isSuppressed = true
+            }
+            failTransport("Control link belongs to another headphone", peripheral: peripheral)
+        }
+    }
+
+    static func addressVerdict(reported: String, pairedConnected: [String]) -> BWPeripheralAddressVerdict {
+        guard let reported = normalizedMACAddress(reported) else { return .unknown }
+        let paired = pairedConnected.compactMap(normalizedMACAddress)
+        guard !paired.isEmpty else { return .unknown }
+        return paired.contains(reported) ? .matches : .mismatch
     }
 
     func updateAudioConnectedDevices(_ devices: [SystemAudioDevice]) {
@@ -501,6 +573,8 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
 
         if names != audioConnectedDeviceNames {
             audioConnectedDeviceNames = names
+            rejectedPeripheralIDs.removeAll()
+            identityRejections.reset()
             refreshANCWireProfile()
             automaticConnection.resetCandidates()
             automaticConnection.isSuppressed = false
@@ -645,7 +719,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         // compatibility check.
         let candidates = discovered.values
             .sorted(by: { $0.rssi > $1.rssi })
-            .filter { !automaticConnection.hasAttempted($0.id) }
+            .filter { !automaticConnection.hasAttempted($0.id) && !rejectedPeripheralIDs.contains($0.id) }
         let allowsGenericFallback = Self.allowsGenericFallback(scanStartedAt: scanStartedAt, now: Date())
         guard
             let item = candidates.first(where: { candidate in
@@ -1437,6 +1511,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
             let rawAddress = payload.displayValue
             macAddress = Self.normalizedMACAddress(rawAddress) ?? rawAddress.uppercased()
             scheduleProfileRestore()
+            verifyGenericPeripheralIdentity()
         case BWRPCatalog.pairedDeviceCountGet.key:
             if let count = payload.intValue { beginPairedDeviceRead(count: count) }
         case BWRPCatalog.pairedDeviceGet.key:
@@ -1497,7 +1572,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         return "serial:\(serial.lowercased())"
     }
 
-    private static func normalizedMACAddress(_ value: String) -> String? {
+    static func normalizedMACAddress(_ value: String) -> String? {
         let payload = value.lowercased().hasPrefix("0x") ? String(value.dropFirst(2)) : value
         let hexadecimal = payload.uppercased().filter(\.isHexDigit)
         guard hexadecimal.count == 12 else { return nil }
@@ -1707,6 +1782,8 @@ extension BowersWilkinsProvider: CBCentralManagerDelegate {
                 cancelConnectionTimeout()
                 pendingConnection = nil
                 automaticConnection.resetForBluetoothRadioTransition()
+                rejectedPeripheralIDs.removeAll()
+                identityRejections.reset()
                 central.stopScan()
                 _ = releasePeripheral()
                 cancelTeardownTracking()
