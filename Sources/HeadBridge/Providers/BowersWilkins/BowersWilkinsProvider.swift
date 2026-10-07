@@ -109,6 +109,22 @@ private struct BWRestorableProfile: Codable, Equatable {
     var spatialAudioPreset: Int
 }
 
+/// Reads that have succeeded at least once in the current session. A control
+/// is a property of the connected device, so one later error reply must not
+/// withdraw it: the original Px8 answers a wear-sensor read with device error
+/// `3` while a wear-sensor write is still being applied.
+struct BWConfirmedReads: Equatable {
+    private(set) var keys: Set<String> = []
+
+    mutating func record(key: String, errorCode: UInt16) {
+        if errorCode == 0 { keys.insert(key) }
+    }
+
+    func contains(_ key: String) -> Bool { keys.contains(key) }
+
+    mutating func removeAll() { keys.removeAll() }
+}
+
 struct BWRPCPendingWrite: Equatable {
     let commandKey: String
     let commandName: String
@@ -310,6 +326,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
     @Published private(set) var ancMode: ANCMode = .off
     private var ancWireProfile: ANCWireProfile = .standard
     private var connectedAdvertisedName: String?
+    private var confirmedReads = BWConfirmedReads()
     @Published private(set) var batteryPercent: Int?
     @Published private(set) var isCharging: Bool?
     @Published private(set) var eqValues = [0, 0, 0, 0, 0]
@@ -856,15 +873,12 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
     static let toneRange = -60...60
 
     var supportsToneControls: Bool {
-        Self.supportsToneControls(
-            bassError: readings[BWRPCatalog.bassGet.key]?.errorCode,
-            trebleError: readings[BWRPCatalog.trebleGet.key]?.errorCode
-        )
+        Self.supportsToneControls(confirmedReads)
     }
 
     /// Both reads must have answered with device error `0`.
-    static func supportsToneControls(bassError: UInt16?, trebleError: UInt16?) -> Bool {
-        bassError == 0 && trebleError == 0
+    static func supportsToneControls(_ confirmed: BWConfirmedReads) -> Bool {
+        confirmed.contains(BWRPCatalog.bassGet.key) && confirmed.contains(BWRPCatalog.trebleGet.key)
     }
 
     /// Accepts only an in-range integer reply; anything else leaves the
@@ -1187,6 +1201,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         restoredProfileDeviceID = nil
         nextPairedDeviceIndex = nil
         readings.removeAll()
+        confirmedReads.removeAll()
         clearPublishedDeviceState()
     }
 
@@ -1354,6 +1369,9 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         do {
             let message = try BWRPC.decode(data)
             let value = message.payload?.displayValue ?? "(no payload)"
+            // Recorded before `readings` publishes, so observers that react to
+            // that change already see the capability.
+            confirmedReads.record(key: message.command.key, errorCode: message.errorCode)
             readings[message.command.key] = ProbeReading(
                 id: message.command.key,
                 name: message.command.name,
@@ -1362,6 +1380,11 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
                 updatedAt: Date()
             )
             if message.succeeded { apply(message) }
+            if message.kind == .response, message.succeeded,
+                let readBack = BWRPCatalog.readBack(forSetKey: message.command.key)
+            {
+                refresh(readBack)
+            }
         } catch {
             addLog(.info, "Decode error: \(error.localizedDescription)")
         }
@@ -1822,7 +1845,7 @@ extension BowersWilkinsProvider: HeadphoneProvider {
 
     var capabilities: HeadphoneCapabilities {
         func supports(_ command: BWRPCCommand) -> Bool {
-            readings[command.key]?.errorCode == 0
+            confirmedReads.contains(command.key)
         }
 
         var result: HeadphoneCapabilities = []

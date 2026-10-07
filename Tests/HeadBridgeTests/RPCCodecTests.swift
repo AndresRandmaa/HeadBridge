@@ -374,11 +374,61 @@ final class RPCCodecTests: XCTestCase {
 
     @MainActor
     func testToneControlsRequireBothReadsToSucceed() {
-        XCTAssertTrue(BowersWilkinsProvider.supportsToneControls(bassError: 0, trebleError: 0))
-        XCTAssertFalse(BowersWilkinsProvider.supportsToneControls(bassError: 0, trebleError: 1))
-        XCTAssertFalse(BowersWilkinsProvider.supportsToneControls(bassError: 1, trebleError: 0))
-        XCTAssertFalse(BowersWilkinsProvider.supportsToneControls(bassError: nil, trebleError: 0))
-        XCTAssertFalse(BowersWilkinsProvider.supportsToneControls(bassError: nil, trebleError: nil))
+        var confirmed = BWConfirmedReads()
+        XCTAssertFalse(BowersWilkinsProvider.supportsToneControls(confirmed))
+
+        confirmed.record(key: BWRPCatalog.bassGet.key, errorCode: 0)
+        confirmed.record(key: BWRPCatalog.trebleGet.key, errorCode: 1)
+        XCTAssertFalse(BowersWilkinsProvider.supportsToneControls(confirmed))
+
+        confirmed.record(key: BWRPCatalog.trebleGet.key, errorCode: 0)
+        XCTAssertTrue(BowersWilkinsProvider.supportsToneControls(confirmed))
+    }
+
+    func testConfirmedReadsSurviveALaterErrorReply() {
+        var confirmed = BWConfirmedReads()
+        let wear = BWRPCatalog.wearGet.key
+        XCTAssertFalse(confirmed.contains(wear))
+
+        confirmed.record(key: wear, errorCode: 1)
+        XCTAssertFalse(confirmed.contains(wear))
+
+        confirmed.record(key: wear, errorCode: 0)
+        XCTAssertTrue(confirmed.contains(wear))
+
+        // Reply captured from an original Px8 while a wear-sensor write was
+        // still being applied.
+        let busy = try? BWRPC.decode(Data([0x0C, 0x12, 0x01, 0x0A, 0x03, 0x00]))
+        XCTAssertEqual(busy?.errorCode, 3)
+        confirmed.record(key: wear, errorCode: busy?.errorCode ?? 0)
+        XCTAssertTrue(confirmed.contains(wear))
+
+        confirmed.removeAll()
+        XCTAssertFalse(confirmed.contains(wear))
+    }
+
+    func testEverySetterHasAConfirmingRead() {
+        let pairs: [(BWRPCCommand, BWRPCCommand)] = [
+            (BWRPCatalog.ancSet, BWRPCatalog.ancGet),
+            (BWRPCatalog.eqSet, BWRPCatalog.eqGet),
+            (BWRPCatalog.eqBypassSet, BWRPCatalog.eqBypassGet),
+            (BWRPCatalog.bassSet, BWRPCatalog.bassGet),
+            (BWRPCatalog.trebleSet, BWRPCatalog.trebleGet),
+            (BWRPCatalog.wearSet, BWRPCatalog.wearGet),
+            (BWRPCatalog.wearSensitivitySet, BWRPCatalog.wearSensitivityGet),
+            (BWRPCatalog.sleepSet, BWRPCatalog.sleepGet),
+            (BWRPCatalog.buttonSet, BWRPCatalog.buttonGet),
+            (BWRPCatalog.voiceSet, BWRPCatalog.voiceGet),
+            (BWRPCatalog.nameSet, BWRPCatalog.nameGet),
+            (BWRPCatalog.spatialEnabledSet, BWRPCatalog.spatialEnabledGet),
+            (BWRPCatalog.spatialPresetSet, BWRPCatalog.spatialPresetGet),
+        ]
+        for (setter, getter) in pairs {
+            XCTAssertEqual(BWRPCatalog.readBack(forSetKey: setter.key), getter, setter.name)
+            // A read is never treated as a setter.
+            XCTAssertNil(BWRPCatalog.readBack(forSetKey: getter.key), getter.name)
+        }
+        XCTAssertNil(BWRPCatalog.readBack(forSetKey: "FF:FF"))
     }
 
     func testBowersWilkinsWriteQueueIsBoundedAndCoalescesPendingCommands() {

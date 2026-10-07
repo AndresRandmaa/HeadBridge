@@ -98,6 +98,18 @@ the corresponding `GET` after a short delay. The successful `GET` reply is the
 authoritative confirmation. Unsolicited notifications use the same command key
 and pass through the same state mapper when their payload shape is known.
 
+## Setter read-back timing
+
+On the original Px8 a setter is not applied instantly. In a capture of the
+wear-sensor setter (`0A:02`), reads of `0A:01` sent before the setter reply
+arrived returned the previous value, and one returned device error `3`; reads
+sent after the reply returned the new value. HeadBridge therefore issues the
+confirming read when the setter's reply arrives, and a control whose read has
+succeeded once in a session is kept even if a later read returns an error.
+
+The same model sends an unsolicited `03:01` notification with the new ANC value
+when the mode is changed with the button on the headphones.
+
 ## Capability probing
 
 After transport readiness, `BowersWilkinsProvider` sends a fixed set of safe

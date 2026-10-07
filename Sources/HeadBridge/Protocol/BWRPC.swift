@@ -166,6 +166,22 @@ enum BWRPCatalog {
             command(0x02, 0x09, "Sleep notification"), pairedDeviceGet,
         ]
 
+    private static let readBackPairs: [(set: BWRPCCommand, get: BWRPCCommand)] = [
+        (ancSet, ancGet), (eqSet, eqGet), (eqBypassSet, eqBypassGet),
+        (bassSet, bassGet), (trebleSet, trebleGet),
+        (wearSet, wearGet), (wearSensitivitySet, wearSensitivityGet),
+        (sleepSet, sleepGet), (buttonSet, buttonGet), (voiceSet, voiceGet),
+        (nameSet, nameGet),
+        (spatialEnabledSet, spatialEnabledGet), (spatialPresetSet, spatialPresetGet),
+    ]
+
+    /// The read that confirms a setter. A device can answer that read with the
+    /// previous value, or a transient error, until its setter reply has been
+    /// sent, so the confirming read is issued after that reply.
+    static func readBack(forSetKey key: String) -> BWRPCCommand? {
+        readBackPairs.first { $0.set.key == key }?.get
+    }
+
     static func name(namespace: UInt8, id: UInt8) -> String {
         allKnown.first { $0.namespace == namespace && $0.id == id }?.name
             ?? String(format: "Unknown %02X:%02X", namespace, id)

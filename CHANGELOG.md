@@ -12,6 +12,11 @@ All notable user-visible changes will be documented here. HeadBridge follows
 - Bowers & Wilkins: bass and treble sliders for headphones that have a two-band
   tone control instead of the five-band EQ, hardware-tested with the original
   Px8.
+- Bowers & Wilkins: confirm a changed setting only after the headphones
+  acknowledge it, and keep a confirmed control visible if a later read fails.
+  Toggling the wear sensor on an original Px8 could bounce back or make the
+  control disappear.
+
 
 ## 0.1.7 - 2026-08-16
 
