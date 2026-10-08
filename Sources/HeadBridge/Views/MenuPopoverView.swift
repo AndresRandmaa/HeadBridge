@@ -12,6 +12,7 @@ struct MenuPopoverView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var expandedDeviceID: AudioDeviceID?
     @State private var showsInputDevices = false
+    @State private var optionKeyMonitor: Any?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,6 +48,21 @@ struct MenuPopoverView: View {
             {
                 controller.startScanning()
             }
+            installOptionKeyMonitor()
+        }
+        // The menu window can be reused between openings, in which case
+        // `onAppear` does not run again; re-read Option whenever it becomes key.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            showsInputDevices = NSEvent.modifierFlags.contains(.option)
+        }
+    }
+
+    /// Reveals the input list when Option is pressed while the menu is already open.
+    private func installOptionKeyMonitor() {
+        guard optionKeyMonitor == nil else { return }
+        optionKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            if event.modifierFlags.contains(.option) { showsInputDevices = true }
+            return event
         }
     }
 
