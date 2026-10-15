@@ -509,7 +509,15 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
                 self.scanTimeoutWorkItem = nil
                 self.central.stopScan()
                 self.phase = .idle
-                self.addLog(.info, "BLE scan timed out and stopped")
+                // While the headphones are connected for audio, keep looking:
+                // they may start advertising at any moment, and nothing else
+                // triggers another scan until the audio devices change.
+                if !self.automaticConnection.isSuppressed, !self.audioConnectedDeviceNames.isEmpty {
+                    self.addLog(.info, "BLE scan found nothing to connect to; scanning again")
+                    self.startScanning(automatically: true)
+                } else {
+                    self.addLog(.info, "BLE scan timed out and stopped")
+                }
             }
         }
         scanTimeoutWorkItem = timeout
