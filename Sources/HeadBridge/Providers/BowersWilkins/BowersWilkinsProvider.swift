@@ -487,6 +487,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         phase = .scanning
         addLog(.info, "Scanning BLE advertisements for up to 10 seconds; duplicate advertisements disabled")
         central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        addSystemConnectedCandidates()
 
         let expectedScanGeneration = scanGeneration
         scanStartedAt = Date()
@@ -510,6 +511,35 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         }
         scanTimeoutWorkItem = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeout)
+    }
+
+    /// Services through which macOS may already hold a headphone's LE link.
+    /// Hardware-verified on the original Px8: macOS keeps the link open
+    /// through Fast Pair (`FE2C`), and the RPC service is
+    /// `85BA93A5-09AC-439A-8CC4-1C3F0CB4F29F`.
+    static let systemConnectedServiceUUIDs = [
+        CBUUID(string: "85BA93A5-09AC-439A-8CC4-1C3F0CB4F29F"),
+        CBUUID(string: "FE2C"),
+    ]
+
+    /// A headphone whose LE link macOS already holds stops advertising, so a
+    /// scan alone never finds it. Offer such peripherals as scan candidates;
+    /// the usual characteristic and address checks still apply.
+    private func addSystemConnectedCandidates() {
+        let connected = central.retrieveConnectedPeripherals(withServices: Self.systemConnectedServiceUUIDs)
+        for peripheral in connected {
+            guard let name = peripheral.name, Self.isDiscoverableAdvertisedName(name),
+                discovered[peripheral.identifier] == nil
+            else { continue }
+            addLog(.info, "\(name) is already connected to this Mac; adding it as a candidate")
+            discovered[peripheral.identifier] = DiscoveredPeripheral(
+                id: peripheral.identifier, name: name, rssi: 0, peripheral: peripheral)
+        }
+        guard !discovered.isEmpty else { return }
+        peripherals = discovered.values.sorted { $0.rssi > $1.rssi }
+        if selectedPeripheralID == nil {
+            selectedPeripheralID = peripherals.first?.id
+        }
     }
 
     func connectSelected() {
