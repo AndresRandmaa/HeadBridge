@@ -648,7 +648,6 @@ struct MenuPopoverView: View {
                     set: { set(Int($0.rounded())) }
                 ),
                 in: -60...60,
-                step: 1,
                 onEditingChanged: { editing in if !editing { commit() } }
             )
             Text(String(format: "%+d", value))
