@@ -226,6 +226,22 @@ final class RPCCodecTests: XCTestCase {
         XCTAssertEqual(try MessagePack.decode(MessagePack.encode(value)), value)
     }
 
+    func testMessagePackDecodesIntegerMapKeysAsDecimalStrings() throws {
+        // Paired-device entry as sent by an original Px8 (05:04).
+        let payload = Data([
+            0x83, 0x01, 0x96, 0x5C, 0xCC, 0x87, 0x30, 0xCC, 0x93, 0xCC, 0xB7, 0x40,
+            0x02, 0xA7, 0x69, 0x50, 0x68, 0x6F, 0x6E, 0x65, 0x00, 0x03, 0xC3,
+        ])
+
+        guard case .map(let map) = try MessagePack.decode(payload) else {
+            return XCTFail("Expected a map")
+        }
+
+        XCTAssertEqual(map["1"]?.arrayValue?.compactMap(\.intValue), [0x5C, 0x87, 0x30, 0x93, 0xB7, 0x40])
+        XCTAssertEqual(map["2"]?.stringValue, "iPhone\0")
+        XCTAssertEqual(map["3"]?.boolValue, true)
+    }
+
     func testMessagePackRejectsUnboundedCollectionsNestingAndTrailingBytes() {
         XCTAssertThrowsError(try MessagePack.decode(Data([0xDD, 0xFF, 0xFF, 0xFF, 0xFF]))) { error in
             guard case MessagePackError.collectionTooLarge = error else {
