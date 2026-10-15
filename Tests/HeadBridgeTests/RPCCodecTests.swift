@@ -56,6 +56,28 @@ final class RPCCodecTests: XCTestCase {
         withExtendedLifetime(cancellation) {}
     }
 
+    @MainActor
+    func testSidebarSnapshotMatchesAPrefixedMACDeviceIdentifier() {
+        // Bowers & Wilkins reports "mac:<address>" and "Px8" is too short for
+        // the name fallback, so only the identifier can mark the row ready.
+        let provider = TestHeadphoneProvider(connectedDeviceID: "mac:ec:66:d1:c6:1c:58")
+        let device = RecognizedHeadphoneDevice(
+            id: "test-provider:ec:66:d1:c6:1c:58",
+            deviceID: "ec:66:d1:c6:1c:58",
+            name: "Px8",
+            address: "EC:66:D1:C6:1C:58",
+            isConnected: true,
+            providerID: provider.providerID,
+            vendorName: provider.vendorName
+        )
+
+        provider.connect(name: "Px8")
+        let snapshot = HeadphoneProviderSidebarSnapshot(device: device, provider: provider)
+
+        XCTAssertEqual(snapshot.state, .ready)
+        XCTAssertEqual(snapshot.battery, 50)
+    }
+
     func testBluetoothInventoryDecodesPairedAndConnectedDevicesWithoutDuplicates() throws {
         let json = #"""
             {
@@ -928,7 +950,7 @@ final class RPCCodecTests: XCTestCase {
 private final class TestHeadphoneProvider: ObservableObject, HeadphoneProvider {
     let providerID = "test-provider"
     let vendorName = "Test"
-    let connectedDeviceID: String? = "test-device"
+    let connectedDeviceID: String?
     @Published private(set) var connectionState = HeadphoneConnectionState.idle
     @Published private(set) var connectedName = "Test Headphones"
     let batteryPercent: Int? = 50
@@ -939,6 +961,10 @@ private final class TestHeadphoneProvider: ObservableObject, HeadphoneProvider {
     let supportedNoiseModes: [HeadphoneNoiseMode] = []
     let restoreOnConnectEnabled = false
     private(set) var disconnectCallCount = 0
+
+    init(connectedDeviceID: String? = "test-device") {
+        self.connectedDeviceID = connectedDeviceID
+    }
 
     var connectionStatePublisher: AnyPublisher<HeadphoneConnectionState, Never> {
         $connectionState.eraseToAnyPublisher()

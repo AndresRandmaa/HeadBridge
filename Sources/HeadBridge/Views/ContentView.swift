@@ -82,8 +82,13 @@ struct HeadphoneProviderSidebarSnapshot: Equatable {
         name = device.name
         vendor = device.vendorName
 
+        // Bowers & Wilkins identifies the device as "mac:<address>"; the
+        // paired-device inventory uses the bare address.
+        let activeID = provider.connectedDeviceID?.lowercased()
+        let pairedID = device.deviceID.lowercased()
         let representsActiveDevice =
-            provider.connectedDeviceID?.lowercased() == device.deviceID.lowercased()
+            activeID == pairedID
+            || activeID == "mac:\(pairedID)"
             || BluetoothDeviceNameMatcher.matches(provider.connectedName, device.name)
         state = representsActiveDevice ? provider.connectionState : .idle
         battery = state == .ready ? provider.batteryPercent : nil
