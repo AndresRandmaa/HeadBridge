@@ -1890,6 +1890,9 @@ extension BowersWilkinsProvider: CBCentralManagerDelegate {
             guard Self.isDiscoverableAdvertisedName(name) else { return }
             let item = DiscoveredPeripheral(
                 id: peripheral.identifier, name: name, rssi: RSSI.intValue, peripheral: peripheral)
+            if discovered[peripheral.identifier] == nil {
+                addLog(.info, "Found \(name) advertising (\(RSSI.intValue) dBm)")
+            }
             discovered[peripheral.identifier] = item
             peripherals = discovered.values.sorted { $0.rssi > $1.rssi }
             if selectedPeripheralID == nil {
