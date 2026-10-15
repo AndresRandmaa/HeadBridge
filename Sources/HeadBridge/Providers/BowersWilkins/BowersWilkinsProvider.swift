@@ -350,6 +350,8 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
     @Published private(set) var ancMode: ANCMode = .off
     private var ancWireProfile: ANCWireProfile = .standard
     private var connectedAdvertisedName: String?
+    /// A link left open by a manual disconnect; see `disconnect()`.
+    private var parkedPeripheral: CBPeripheral?
     private var confirmedReads = BWConfirmedReads()
     private var connectedPairedAddresses: [String] = []
     private var rejectedPeripheralIDs: Set<UUID> = []
@@ -526,7 +528,12 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
     /// scan alone never finds it. Offer such peripherals as scan candidates;
     /// the usual characteristic and address checks still apply.
     private func addSystemConnectedCandidates() {
-        let connected = central.retrieveConnectedPeripherals(withServices: Self.systemConnectedServiceUUIDs)
+        var connected = central.retrieveConnectedPeripherals(withServices: Self.systemConnectedServiceUUIDs)
+        if let parkedPeripheral, parkedPeripheral.state == .connected,
+            !connected.contains(where: { $0.identifier == parkedPeripheral.identifier })
+        {
+            connected.append(parkedPeripheral)
+        }
         for peripheral in connected {
             guard let name = peripheral.name, Self.isDiscoverableAdvertisedName(name),
                 discovered[peripheral.identifier] == nil
@@ -537,7 +544,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         }
         guard !discovered.isEmpty else { return }
         peripherals = discovered.values.sorted { $0.rssi > $1.rssi }
-        if selectedPeripheralID == nil {
+        if selectedPeripheralID.map({ discovered[$0] == nil }) ?? true {
             selectedPeripheralID = peripherals.first?.id
         }
     }
@@ -664,6 +671,10 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
             return
         }
 
+        if parkedPeripheral?.identifier == item.id {
+            parkedPeripheral = nil
+        }
+
         switch item.peripheral.state {
         case .connected:
             adoptIdentity(of: item)
@@ -731,8 +742,20 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         cancelConnectionTimeout()
         cancelTeardownTracking()
         central.stopScan()
+        let keepsLink = connectedAdvertisedName.map(Self.isGenericAdvertisedName) ?? false
         let disconnectedPeripheral = releasePeripheral()
-        if let disconnectedPeripheral { central.cancelPeripheralConnection(disconnectedPeripheral) }
+        if let disconnectedPeripheral {
+            // A generically advertised headphone (the original Px8) stops
+            // advertising once its control link closes and cannot be found
+            // again until its audio route reconnects. Stop using the link but
+            // leave it open, so Scan or Connect can pick it up again.
+            if keepsLink, disconnectedPeripheral.state == .connected {
+                parkedPeripheral = disconnectedPeripheral
+                addLog(.info, "Stopped using the control link; leaving it open so it can be reused")
+            } else {
+                central.cancelPeripheralConnection(disconnectedPeripheral)
+            }
+        }
         phase = .idle
     }
 
