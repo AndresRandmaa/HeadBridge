@@ -1537,8 +1537,10 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
     private func applyPairedDevice(_ payload: MessagePackValue) {
         guard let index = nextPairedDeviceIndex,
             case .map(let map) = payload,
-            let name = map["2"]?.stringValue
+            let rawName = map["2"]?.stringValue
         else { return }
+        // The original Px8 terminates names with a NUL character.
+        let name = rawName.trimmingCharacters(in: CharacterSet(charactersIn: "\0"))
         let address =
             map["1"]?.arrayValue?
             .compactMap(\.intValue)

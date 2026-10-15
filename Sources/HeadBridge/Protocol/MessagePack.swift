@@ -268,8 +268,14 @@ enum MessagePack {
             try validateCollection(count: count, minimumBytesPerElement: 2)
             var values: [String: MessagePackValue] = [:]
             for _ in 0..<count {
-                guard case .string(let key) = try decodeValue(depth: depth + 1) else {
-                    throw MessagePackError.nonStringMapKey
+                // The original Px8 keys its paired-device entries by integer;
+                // those keys are stored in their decimal form.
+                let key: String
+                switch try decodeValue(depth: depth + 1) {
+                case .string(let value): key = value
+                case .int(let value): key = String(value)
+                case .uint(let value): key = String(value)
+                default: throw MessagePackError.nonStringMapKey
                 }
                 values[key] = try decodeValue(depth: depth + 1)
             }
