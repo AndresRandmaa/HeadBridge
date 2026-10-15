@@ -835,7 +835,7 @@ private struct BWConnectionView: View {
                         get: { controller.restoreOnConnectEnabled },
                         set: { controller.setRestoreOnConnectEnabled($0) }
                     ))
-                if controller.connectionState.isConnecting {
+                if controller.connectionState == .connecting {
                     HStack(spacing: 10) {
                         ProgressView().controlSize(.small)
                         Text("Connecting…")
@@ -858,7 +858,7 @@ private struct BWConnectionView: View {
                         .disabled(controller.phase == .scanning)
                         Button("Connect") { controller.connectSelected() }
                             .buttonStyle(.borderedProminent)
-                            .disabled(controller.selectedPeripheralID == nil)
+                            .disabled(!controller.canConnectSelected)
                     }
                 }
             }

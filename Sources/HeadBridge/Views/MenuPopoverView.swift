@@ -568,7 +568,7 @@ struct MenuPopoverView: View {
     @ViewBuilder
     private func connectionSection(_ provider: any HeadphoneProvider) -> some View {
         Group {
-            if provider.connectionState.isConnecting {
+            if provider.connectionState == .connecting {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
@@ -601,10 +601,13 @@ struct MenuPopoverView: View {
 
                     if provider.providerID == controller.providerID {
                         HStack {
-                            Button("Scan") { controller.startScanning() }
+                            Button(controller.phase == .scanning ? "Scanning…" : "Scan") {
+                                controller.startScanning()
+                            }
+                            .disabled(controller.phase == .scanning)
                             Button("Connect") { controller.connectSelected() }
                                 .buttonStyle(.borderedProminent)
-                                .disabled(controller.selectedPeripheralID == nil)
+                                .disabled(!controller.canConnectSelected)
                         }
                     } else if provider.providerID == sony.providerID {
                         ForEach(sony.devices) { device in

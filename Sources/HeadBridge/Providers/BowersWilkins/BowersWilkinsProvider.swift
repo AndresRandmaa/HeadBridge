@@ -550,6 +550,11 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         }
     }
 
+    /// Whether the Connect button has a peripheral from the current scan.
+    var canConnectSelected: Bool {
+        selectedPeripheralID.map { discovered[$0] != nil } ?? false
+    }
+
     /// The name shown in the headphone picker. A generic advertisement such
     /// as `LE_BWHP` does not identify the model, so it is shown under the
     /// Core Audio name only while it is the only one in range; several are
