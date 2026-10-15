@@ -493,6 +493,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
 
         let expectedScanGeneration = scanGeneration
         scanStartedAt = Date()
+        if automatically { tryAutomaticConnection() }
         // Advertisements arrive one at a time. Give a model-named one the
         // chance to arrive before a generic candidate is accepted.
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.genericFallbackGrace) { [weak self] in
@@ -791,14 +792,22 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
             .sorted(by: { $0.rssi > $1.rssi })
             .filter { !automaticConnection.hasAttempted($0.id) && !rejectedPeripheralIDs.contains($0.id) }
         let allowsGenericFallback = Self.allowsGenericFallback(scanStartedAt: scanStartedAt, now: Date())
+        // A peripheral macOS already holds a link to (or one a manual
+        // disconnect left open) is not racing other advertisements, so it
+        // does not need the grace period.
+        let alreadyLinked = Set(
+            central.retrieveConnectedPeripherals(withServices: Self.systemConnectedServiceUUIDs).map(\.identifier)
+        ).union(parkedPeripheral.map { [$0.identifier] } ?? [])
         guard
             let item = candidates.first(where: { candidate in
                 audioConnectedDeviceNames.contains {
                     BluetoothDeviceNameMatcher.matches($0, candidate.name)
                 }
             })
-                ?? (allowsGenericFallback
-                    ? candidates.first(where: { Self.isGenericAdvertisedName($0.name) }) : nil)
+                ?? candidates.first(where: {
+                    Self.isGenericAdvertisedName($0.name)
+                        && (allowsGenericFallback || alreadyLinked.contains($0.id))
+                })
         else { return }
 
         automaticConnection.markAttempted(item.id)
