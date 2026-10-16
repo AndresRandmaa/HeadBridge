@@ -588,6 +588,12 @@ struct MenuPopoverView: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    if provider.providerID == controller.providerID && controller.isWaitingForHeadphones {
+                        Text("Waiting for the headphones to become available…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     if provider.providerID == controller.providerID && !controller.peripherals.isEmpty {
                         Picker("Headphones", selection: $controller.selectedPeripheralID) {
                             Text("Select headphones…").tag(nil as UUID?)

@@ -841,8 +841,19 @@ private struct BWConnectionView: View {
                         Text("Connecting…")
                     }
                 } else {
-                    Text("Select a nearby Bowers & Wilkins headset after starting a Bluetooth scan.")
-                        .foregroundStyle(.secondary)
+                    if !controller.hasAudioRoute {
+                        Text("Connect the headphones to this Mac for audio first. The controls connect once they are.")
+                            .foregroundStyle(.secondary)
+                    } else if controller.isWaitingForHeadphones {
+                        HStack(spacing: 10) {
+                            ProgressView().controlSize(.small)
+                            Text("Waiting for the headphones to become available…")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("Select a nearby Bowers & Wilkins headset after starting a Bluetooth scan.")
+                            .foregroundStyle(.secondary)
+                    }
                     if !controller.peripherals.isEmpty {
                         Picker("Headphones", selection: $controller.selectedPeripheralID) {
                             Text("Select device").tag(Optional<UUID>.none)

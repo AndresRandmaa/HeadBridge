@@ -396,7 +396,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
     private var didStartInitialRefresh = false
     private var pairedDeviceCount = 0
     private var nextPairedDeviceIndex: Int?
-    private var audioConnectedDeviceNames: [String] = []
+    @Published private(set) var audioConnectedDeviceNames: [String] = []
     private var automaticConnection = BWAutomaticConnectionTracker()
     private var automaticReconnectTask: Task<Void, Never>?
     private var pendingConnection: (item: DiscoveredPeripheral, automatically: Bool)?
@@ -559,8 +559,19 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
     }
 
     /// Whether the Connect button has a peripheral from the current scan.
+    /// The control link only works while the headphones are connected for
+    /// audio, so Connect waits for that too.
     var canConnectSelected: Bool {
-        selectedPeripheralID.map { discovered[$0] != nil } ?? false
+        hasAudioRoute && (selectedPeripheralID.map { discovered[$0] != nil } ?? false)
+    }
+
+    /// Supported headphones are connected to this Mac for audio.
+    var hasAudioRoute: Bool { !audioConnectedDeviceNames.isEmpty }
+
+    /// Scanning on its own because the headphones are connected for audio
+    /// but have not advertised their control link yet.
+    var isWaitingForHeadphones: Bool {
+        phase == .scanning && hasAudioRoute && !automaticConnection.isSuppressed
     }
 
     /// The name shown in the headphone picker. A generic advertisement such
@@ -649,6 +660,15 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
             cancelAutomaticReconnect()
         }
         if names.isEmpty {
+            if peripheral != nil || parkedPeripheral != nil {
+                addLog(.info, "Headphones are no longer connected for audio; closing the control link")
+            }
+            if let parkedPeripheral {
+                central.cancelPeripheralConnection(parkedPeripheral)
+                self.parkedPeripheral = nil
+            }
+            discovered.removeAll()
+            peripherals.removeAll()
             cancelAutomaticReconnect()
             cancelScanTimeout()
             cancelConnectionTimeout()
@@ -1968,6 +1988,14 @@ extension BowersWilkinsProvider: CBCentralManagerDelegate {
                 self.isCurrentPeripheralSession(peripheral)
             else { return }
             cancelConnectionTimeout()
+            addLog(
+                .info,
+                "Control link closed\(error.map { ": \($0.localizedDescription)" } ?? " by the headphones")"
+            )
+            // The headphones stop advertising when the link drops (for
+            // example when they go to sleep), so the old candidate is stale.
+            discovered.removeAll()
+            peripherals.removeAll()
             let nextConnection = pendingConnection
             pendingConnection = nil
             _ = releasePeripheral()
