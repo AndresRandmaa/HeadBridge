@@ -1618,7 +1618,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         case "04:0C": audioSource = Self.sourceName(payload.intValue)
         case "05:06": audioCodec = Self.codecName(Self.embeddedInt(payload))
         case "04:14":
-            samplingRate = payload.intValue.map { "\($0) Hz" } ?? payload.displayValue
+            samplingRate = payload.intValue.map(Self.samplingRateText) ?? payload.displayValue
         case "02:01": softwareVersion = payload.displayValue
         case "08:04":
             serialNumber = payload.displayValue
@@ -1633,10 +1633,13 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         case BWRPCatalog.pairedDeviceGet.key:
             applyPairedDevice(payload)
         case "04:16":
+            // Sent when playback starts or stops. On the original Px8 the first
+            // value stays 0 even while playing ([0, 3, 44100] on start,
+            // [0, 0, 0, 0] on stop), so read the source itself instead.
             if let values = payload.arrayValue?.compactMap(\.intValue), values.count >= 3 {
-                audioSource = Self.sourceName(values[0])
                 audioCodec = Self.codecName(values[1])
-                samplingRate = "\(values[2]) Hz"
+                samplingRate = Self.samplingRateText(values[2])
+                refresh(BWRPCatalog.audioSourceGet)
             }
         default: break
         }
@@ -1708,8 +1711,13 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         return text.split(whereSeparator: { !$0.isNumber && $0 != "-" }).last.flatMap { Int($0) }
     }
 
+    private static func samplingRateText(_ value: Int) -> String {
+        value > 0 ? "\(value) Hz" : "—"
+    }
+
     private static func sourceName(_ value: Int?) -> String {
         switch value {
+        case 0, nil: "—"
         case 2: "AUX"
         case 5: "USB"
         case 6: "Bluetooth A2DP 1"
