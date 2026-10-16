@@ -651,6 +651,9 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
             .filter(Self.isSupportedHeadphoneName)
 
         if names != audioConnectedDeviceNames {
+            for name in names where !audioConnectedDeviceNames.contains(name) {
+                addLog(.info, "\(name) connected for audio; looking for its control link")
+            }
             audioConnectedDeviceNames = names
             rejectedPeripheralIDs.removeAll()
             identityRejections.reset()
@@ -1429,6 +1432,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         guard !didStartInitialRefresh else { return }
         didStartInitialRefresh = true
         addLog(.info, "B&W RPC characteristics discovered")
+        addLog(.info, "Control link to \(connectedName) ready")
         refreshPrimary()
         scheduleProfileRestore()
     }
