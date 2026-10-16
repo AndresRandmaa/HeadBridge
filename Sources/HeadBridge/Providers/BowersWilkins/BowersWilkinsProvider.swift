@@ -549,6 +549,23 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         }
     }
 
+    /// The name shown in the headphone picker. A generic advertisement such
+    /// as `LE_BWHP` does not identify the model, so it is shown under the
+    /// Core Audio name only while it is the only one in range; several are
+    /// told apart by signal strength. A link a manual disconnect left open was
+    /// already verified, so it always shows the Core Audio name.
+    func pickerLabel(for item: DiscoveredPeripheral) -> String {
+        if item.id == parkedPeripheral?.identifier {
+            return "\(displayName(for: item)) (linked)"
+        }
+        let genericCount = discovered.values.filter { Self.isGenericAdvertisedName($0.name) }.count
+        guard Self.isGenericAdvertisedName(item.name), genericCount > 1 else {
+            return displayName(for: item)
+        }
+        // Peripherals macOS already holds a link to carry no advertisement RSSI.
+        return item.rssi == 0 ? "\(item.name) (connected)" : "\(item.name) (\(item.rssi) dBm)"
+    }
+
     func connectSelected() {
         guard let id = selectedPeripheralID, let item = discovered[id] else { return }
         automaticConnection.isSuppressed = false

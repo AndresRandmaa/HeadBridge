@@ -592,7 +592,7 @@ struct MenuPopoverView: View {
                         Picker("Headphones", selection: $controller.selectedPeripheralID) {
                             Text("Select headphones…").tag(nil as UUID?)
                             ForEach(controller.peripherals) { peripheral in
-                                Text(peripheral.name)
+                                Text(controller.pickerLabel(for: peripheral))
                                     .tag(Optional(peripheral.id))
                             }
                         }

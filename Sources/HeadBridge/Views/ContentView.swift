@@ -847,7 +847,7 @@ private struct BWConnectionView: View {
                         Picker("Headphones", selection: $controller.selectedPeripheralID) {
                             Text("Select device").tag(Optional<UUID>.none)
                             ForEach(controller.peripherals) { item in
-                                Text(item.name).tag(Optional(item.id))
+                                Text(controller.pickerLabel(for: item)).tag(Optional(item.id))
                             }
                         }
                     }
