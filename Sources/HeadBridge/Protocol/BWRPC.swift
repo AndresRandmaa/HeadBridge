@@ -126,12 +126,13 @@ enum BWRPCatalog {
     static let pairedDeviceCountGet = command(0x05, 0x0B, "Paired device list size")
     static let batteryPercentageGet = command(0x08, 0x0C, "Battery percentage")
     static let chargingStatusGet = command(0x08, 0x0B, "Charging status")
+    static let audioSourceGet = command(0x04, 0x0C, "Audio source")
 
     static let primaryReads: [BWRPCCommand] = [
         ancGet, eqGet, eqBypassGet, bassGet, trebleGet, wearGet, wearSensitivityGet, sleepGet,
         buttonGet, voiceGet, nameGet, spatialEnabledGet, spatialPresetGet,
         batteryPercentageGet, chargingStatusGet,
-        command(0x04, 0x0C, "Audio source"),
+        audioSourceGet,
         command(0x05, 0x06, "Audio codec"),
         command(0x04, 0x14, "Sampling rate"),
         command(0x02, 0x01, "Software version"),

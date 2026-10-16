@@ -350,6 +350,8 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
     @Published private(set) var ancMode: ANCMode = .off
     private var ancWireProfile: ANCWireProfile = .standard
     private var connectedAdvertisedName: String?
+    /// A link left open by a manual disconnect; see `disconnect()`.
+    private var parkedPeripheral: CBPeripheral?
     private var confirmedReads = BWConfirmedReads()
     private var connectedPairedAddresses: [String] = []
     private var rejectedPeripheralIDs: Set<UUID> = []
@@ -394,7 +396,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
     private var didStartInitialRefresh = false
     private var pairedDeviceCount = 0
     private var nextPairedDeviceIndex: Int?
-    private var audioConnectedDeviceNames: [String] = []
+    @Published private(set) var audioConnectedDeviceNames: [String] = []
     private var automaticConnection = BWAutomaticConnectionTracker()
     private var automaticReconnectTask: Task<Void, Never>?
     private var pendingConnection: (item: DiscoveredPeripheral, automatically: Bool)?
@@ -487,9 +489,11 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         phase = .scanning
         addLog(.info, "Scanning BLE advertisements for up to 10 seconds; duplicate advertisements disabled")
         central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        addSystemConnectedCandidates()
 
         let expectedScanGeneration = scanGeneration
         scanStartedAt = Date()
+        if automatically { tryAutomaticConnection() }
         // Advertisements arrive one at a time. Give a model-named one the
         // chance to arrive before a generic candidate is accepted.
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.genericFallbackGrace) { [weak self] in
@@ -505,11 +509,86 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
                 self.scanTimeoutWorkItem = nil
                 self.central.stopScan()
                 self.phase = .idle
-                self.addLog(.info, "BLE scan timed out and stopped")
+                // While the headphones are connected for audio, keep looking:
+                // they may start advertising at any moment, and nothing else
+                // triggers another scan until the audio devices change.
+                if !self.automaticConnection.isSuppressed, !self.audioConnectedDeviceNames.isEmpty {
+                    self.addLog(.info, "BLE scan found nothing to connect to; scanning again")
+                    self.startScanning(automatically: true)
+                } else {
+                    self.addLog(.info, "BLE scan timed out and stopped")
+                }
             }
         }
         scanTimeoutWorkItem = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeout)
+    }
+
+    /// Services through which macOS may already hold a headphone's LE link.
+    /// Hardware-verified on the original Px8: macOS keeps the link open
+    /// through Fast Pair (`FE2C`), and the RPC service is
+    /// `85BA93A5-09AC-439A-8CC4-1C3F0CB4F29F`.
+    static let systemConnectedServiceUUIDs = [
+        CBUUID(string: "85BA93A5-09AC-439A-8CC4-1C3F0CB4F29F"),
+        CBUUID(string: "FE2C"),
+    ]
+
+    /// A headphone whose LE link macOS already holds stops advertising, so a
+    /// scan alone never finds it. Offer such peripherals as scan candidates;
+    /// the usual characteristic and address checks still apply.
+    private func addSystemConnectedCandidates() {
+        var connected = central.retrieveConnectedPeripherals(withServices: Self.systemConnectedServiceUUIDs)
+        if let parkedPeripheral, parkedPeripheral.state == .connected,
+            !connected.contains(where: { $0.identifier == parkedPeripheral.identifier })
+        {
+            connected.append(parkedPeripheral)
+        }
+        for peripheral in connected {
+            guard let name = peripheral.name, Self.isDiscoverableAdvertisedName(name),
+                discovered[peripheral.identifier] == nil
+            else { continue }
+            addLog(.info, "\(name) is already connected to this Mac; adding it as a candidate")
+            discovered[peripheral.identifier] = DiscoveredPeripheral(
+                id: peripheral.identifier, name: name, rssi: 0, peripheral: peripheral)
+        }
+        guard !discovered.isEmpty else { return }
+        peripherals = discovered.values.sorted { $0.rssi > $1.rssi }
+        if selectedPeripheralID.map({ discovered[$0] == nil }) ?? true {
+            selectedPeripheralID = peripherals.first?.id
+        }
+    }
+
+    /// Whether the Connect button has a peripheral from the current scan.
+    /// The control link only works while the headphones are connected for
+    /// audio, so Connect waits for that too.
+    var canConnectSelected: Bool {
+        hasAudioRoute && (selectedPeripheralID.map { discovered[$0] != nil } ?? false)
+    }
+
+    /// Supported headphones are connected to this Mac for audio.
+    var hasAudioRoute: Bool { !audioConnectedDeviceNames.isEmpty }
+
+    /// Scanning on its own because the headphones are connected for audio
+    /// but have not advertised their control link yet.
+    var isWaitingForHeadphones: Bool {
+        phase == .scanning && hasAudioRoute && !automaticConnection.isSuppressed
+    }
+
+    /// The name shown in the headphone picker. A generic advertisement such
+    /// as `LE_BWHP` does not identify the model, so it is shown under the
+    /// Core Audio name only while it is the only one in range; several are
+    /// told apart by signal strength. A link a manual disconnect left open was
+    /// already verified, so it always shows the Core Audio name.
+    func pickerLabel(for item: DiscoveredPeripheral) -> String {
+        if item.id == parkedPeripheral?.identifier {
+            return "\(displayName(for: item)) (linked)"
+        }
+        let genericCount = discovered.values.filter { Self.isGenericAdvertisedName($0.name) }.count
+        guard Self.isGenericAdvertisedName(item.name), genericCount > 1 else {
+            return displayName(for: item)
+        }
+        // Peripherals macOS already holds a link to carry no advertisement RSSI.
+        return item.rssi == 0 ? "\(item.name) (connected)" : "\(item.name) (\(item.rssi) dBm)"
     }
 
     func connectSelected() {
@@ -572,6 +651,9 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
             .filter(Self.isSupportedHeadphoneName)
 
         if names != audioConnectedDeviceNames {
+            for name in names where !audioConnectedDeviceNames.contains(name) {
+                addLog(.info, "\(name) connected for audio; looking for its control link")
+            }
             audioConnectedDeviceNames = names
             rejectedPeripheralIDs.removeAll()
             identityRejections.reset()
@@ -581,6 +663,15 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
             cancelAutomaticReconnect()
         }
         if names.isEmpty {
+            if peripheral != nil || parkedPeripheral != nil {
+                addLog(.info, "Headphones are no longer connected for audio; closing the control link")
+            }
+            if let parkedPeripheral {
+                central.cancelPeripheralConnection(parkedPeripheral)
+                self.parkedPeripheral = nil
+            }
+            discovered.removeAll()
+            peripherals.removeAll()
             cancelAutomaticReconnect()
             cancelScanTimeout()
             cancelConnectionTimeout()
@@ -632,6 +723,10 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
                 central.cancelPeripheralConnection(current)
             }
             return
+        }
+
+        if parkedPeripheral?.identifier == item.id {
+            parkedPeripheral = nil
         }
 
         switch item.peripheral.state {
@@ -701,8 +796,20 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         cancelConnectionTimeout()
         cancelTeardownTracking()
         central.stopScan()
+        let keepsLink = connectedAdvertisedName.map(Self.isGenericAdvertisedName) ?? false
         let disconnectedPeripheral = releasePeripheral()
-        if let disconnectedPeripheral { central.cancelPeripheralConnection(disconnectedPeripheral) }
+        if let disconnectedPeripheral {
+            // A generically advertised headphone (the original Px8) stops
+            // advertising once its control link closes and cannot be found
+            // again until its audio route reconnects. Stop using the link but
+            // leave it open, so Scan or Connect can pick it up again.
+            if keepsLink, disconnectedPeripheral.state == .connected {
+                parkedPeripheral = disconnectedPeripheral
+                addLog(.info, "Stopped using the control link; leaving it open so it can be reused")
+            } else {
+                central.cancelPeripheralConnection(disconnectedPeripheral)
+            }
+        }
         phase = .idle
     }
 
@@ -721,14 +828,22 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
             .sorted(by: { $0.rssi > $1.rssi })
             .filter { !automaticConnection.hasAttempted($0.id) && !rejectedPeripheralIDs.contains($0.id) }
         let allowsGenericFallback = Self.allowsGenericFallback(scanStartedAt: scanStartedAt, now: Date())
+        // A peripheral macOS already holds a link to (or one a manual
+        // disconnect left open) is not racing other advertisements, so it
+        // does not need the grace period.
+        let alreadyLinked = Set(
+            central.retrieveConnectedPeripherals(withServices: Self.systemConnectedServiceUUIDs).map(\.identifier)
+        ).union(parkedPeripheral.map { [$0.identifier] } ?? [])
         guard
             let item = candidates.first(where: { candidate in
                 audioConnectedDeviceNames.contains {
                     BluetoothDeviceNameMatcher.matches($0, candidate.name)
                 }
             })
-                ?? (allowsGenericFallback
-                    ? candidates.first(where: { Self.isGenericAdvertisedName($0.name) }) : nil)
+                ?? candidates.first(where: {
+                    Self.isGenericAdvertisedName($0.name)
+                        && (allowsGenericFallback || alreadyLinked.contains($0.id))
+                })
         else { return }
 
         automaticConnection.markAttempted(item.id)
@@ -1317,6 +1432,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         guard !didStartInitialRefresh else { return }
         didStartInitialRefresh = true
         addLog(.info, "B&W RPC characteristics discovered")
+        addLog(.info, "Control link to \(connectedName) ready")
         refreshPrimary()
         scheduleProfileRestore()
     }
@@ -1502,7 +1618,7 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         case "04:0C": audioSource = Self.sourceName(payload.intValue)
         case "05:06": audioCodec = Self.codecName(Self.embeddedInt(payload))
         case "04:14":
-            samplingRate = payload.intValue.map { "\($0) Hz" } ?? payload.displayValue
+            samplingRate = payload.intValue.map(Self.samplingRateText) ?? payload.displayValue
         case "02:01": softwareVersion = payload.displayValue
         case "08:04":
             serialNumber = payload.displayValue
@@ -1517,10 +1633,13 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         case BWRPCatalog.pairedDeviceGet.key:
             applyPairedDevice(payload)
         case "04:16":
+            // Sent when playback starts or stops. On the original Px8 the first
+            // value stays 0 even while playing ([0, 3, 44100] on start,
+            // [0, 0, 0, 0] on stop), so read the source itself instead.
             if let values = payload.arrayValue?.compactMap(\.intValue), values.count >= 3 {
-                audioSource = Self.sourceName(values[0])
                 audioCodec = Self.codecName(values[1])
-                samplingRate = "\(values[2]) Hz"
+                samplingRate = Self.samplingRateText(values[2])
+                refresh(BWRPCatalog.audioSourceGet)
             }
         default: break
         }
@@ -1592,8 +1711,13 @@ final class BowersWilkinsProvider: NSObject, ObservableObject {
         return text.split(whereSeparator: { !$0.isNumber && $0 != "-" }).last.flatMap { Int($0) }
     }
 
+    private static func samplingRateText(_ value: Int) -> String {
+        value > 0 ? "\(value) Hz" : "—"
+    }
+
     private static func sourceName(_ value: Int?) -> String {
         switch value {
+        case 0, nil: "—"
         case 2: "AUX"
         case 5: "USB"
         case 6: "Bluetooth A2DP 1"
@@ -1806,6 +1930,9 @@ extension BowersWilkinsProvider: CBCentralManagerDelegate {
             guard Self.isDiscoverableAdvertisedName(name) else { return }
             let item = DiscoveredPeripheral(
                 id: peripheral.identifier, name: name, rssi: RSSI.intValue, peripheral: peripheral)
+            if discovered[peripheral.identifier] == nil {
+                addLog(.info, "Found \(name) advertising (\(RSSI.intValue) dBm)")
+            }
             discovered[peripheral.identifier] = item
             peripherals = discovered.values.sorted { $0.rssi > $1.rssi }
             if selectedPeripheralID == nil {
@@ -1873,6 +2000,14 @@ extension BowersWilkinsProvider: CBCentralManagerDelegate {
                 self.isCurrentPeripheralSession(peripheral)
             else { return }
             cancelConnectionTimeout()
+            addLog(
+                .info,
+                "Control link closed\(error.map { ": \($0.localizedDescription)" } ?? " by the headphones")"
+            )
+            // The headphones stop advertising when the link drops (for
+            // example when they go to sleep), so the old candidate is stale.
+            discovered.removeAll()
+            peripherals.removeAll()
             let nextConnection = pendingConnection
             pendingConnection = nil
             _ = releasePeripheral()

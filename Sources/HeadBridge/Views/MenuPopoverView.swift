@@ -568,7 +568,7 @@ struct MenuPopoverView: View {
     @ViewBuilder
     private func connectionSection(_ provider: any HeadphoneProvider) -> some View {
         Group {
-            if provider.connectionState.isConnecting {
+            if provider.connectionState == .connecting {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
@@ -588,11 +588,17 @@ struct MenuPopoverView: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    if provider.providerID == controller.providerID && controller.isWaitingForHeadphones {
+                        Text("Waiting for the headphones to become available…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     if provider.providerID == controller.providerID && !controller.peripherals.isEmpty {
                         Picker("Headphones", selection: $controller.selectedPeripheralID) {
                             Text("Select headphones…").tag(nil as UUID?)
                             ForEach(controller.peripherals) { peripheral in
-                                Text(peripheral.name)
+                                Text(controller.pickerLabel(for: peripheral))
                                     .tag(Optional(peripheral.id))
                             }
                         }
@@ -601,10 +607,13 @@ struct MenuPopoverView: View {
 
                     if provider.providerID == controller.providerID {
                         HStack {
-                            Button("Scan") { controller.startScanning() }
+                            Button(controller.phase == .scanning ? "Scanning…" : "Scan") {
+                                controller.startScanning()
+                            }
+                            .disabled(controller.phase == .scanning)
                             Button("Connect") { controller.connectSelected() }
                                 .buttonStyle(.borderedProminent)
-                                .disabled(controller.selectedPeripheralID == nil)
+                                .disabled(!controller.canConnectSelected)
                         }
                     } else if provider.providerID == sony.providerID {
                         ForEach(sony.devices) { device in
@@ -648,7 +657,6 @@ struct MenuPopoverView: View {
                     set: { set(Int($0.rounded())) }
                 ),
                 in: -60...60,
-                step: 1,
                 onEditingChanged: { editing in if !editing { commit() } }
             )
             Text(String(format: "%+d", value))

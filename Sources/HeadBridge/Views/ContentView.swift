@@ -835,19 +835,30 @@ private struct BWConnectionView: View {
                         get: { controller.restoreOnConnectEnabled },
                         set: { controller.setRestoreOnConnectEnabled($0) }
                     ))
-                if controller.connectionState.isConnecting {
+                if controller.connectionState == .connecting {
                     HStack(spacing: 10) {
                         ProgressView().controlSize(.small)
                         Text("Connecting…")
                     }
                 } else {
-                    Text("Select a nearby Bowers & Wilkins headset after starting a Bluetooth scan.")
-                        .foregroundStyle(.secondary)
+                    if !controller.hasAudioRoute {
+                        Text("Connect the headphones to this Mac for audio first. The controls connect once they are.")
+                            .foregroundStyle(.secondary)
+                    } else if controller.isWaitingForHeadphones {
+                        HStack(spacing: 10) {
+                            ProgressView().controlSize(.small)
+                            Text("Waiting for the headphones to become available…")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("Select a nearby Bowers & Wilkins headset after starting a Bluetooth scan.")
+                            .foregroundStyle(.secondary)
+                    }
                     if !controller.peripherals.isEmpty {
                         Picker("Headphones", selection: $controller.selectedPeripheralID) {
                             Text("Select device").tag(Optional<UUID>.none)
                             ForEach(controller.peripherals) { item in
-                                Text(item.name).tag(Optional(item.id))
+                                Text(controller.pickerLabel(for: item)).tag(Optional(item.id))
                             }
                         }
                     }
@@ -858,7 +869,7 @@ private struct BWConnectionView: View {
                         .disabled(controller.phase == .scanning)
                         Button("Connect") { controller.connectSelected() }
                             .buttonStyle(.borderedProminent)
-                            .disabled(controller.selectedPeripheralID == nil)
+                            .disabled(!controller.canConnectSelected)
                     }
                 }
             }
@@ -1553,7 +1564,6 @@ private struct ControlsView: View {
                         set: { set(Int($0.rounded())) }
                     ),
                     in: -60...60,
-                    step: 1,
                     onEditingChanged: { editing in if !editing { commit() } }
                 )
                 Text(String(format: "%+d", value))
@@ -1571,6 +1581,10 @@ private struct ControlsView: View {
 private struct InspectorView: View {
     @EnvironmentObject private var controller: BowersWilkinsProvider
 
+    /// Device error 1 is what a model replies to a command it does not have
+    /// (on the original Px8: 5-band EQ, EQ bypass and spatial audio).
+    private static let unsupportedErrorCode = 1
+
     private var readings: [ProbeReading] {
         controller.readings.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -1581,7 +1595,7 @@ private struct InspectorView: View {
                 VStack(alignment: .leading) {
                     Text("Read-only protocol inspector").font(.headline)
                     Text(
-                        "Queries all safe no-argument values found in the APK. Unsupported commands are shown with their device error code."
+                        "Queries all safe no-argument values found in the APK. Commands this model does not have are shown as not supported; other failures show their device error code."
                     )
                     .font(.caption).foregroundStyle(.secondary)
                 }
@@ -1599,6 +1613,12 @@ private struct InspectorView: View {
                     Spacer()
                     if reading.errorCode == 0 {
                         Text(reading.value).monospaced().textSelection(.enabled)
+                    } else if reading.errorCode == Self.unsupportedErrorCode {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("—").monospaced().foregroundStyle(.secondary)
+                            Text("not supported").font(.caption).italic().foregroundStyle(.tertiary)
+                        }
+                        .help("Device error \(reading.errorCode): this model does not have the command")
                     } else {
                         Text("error \(reading.errorCode)").foregroundStyle(.red).monospaced()
                     }
