@@ -1581,6 +1581,10 @@ private struct ControlsView: View {
 private struct InspectorView: View {
     @EnvironmentObject private var controller: BowersWilkinsProvider
 
+    /// Device error 1 is what a model replies to a command it does not have
+    /// (on the original Px8: 5-band EQ, EQ bypass and spatial audio).
+    private static let unsupportedErrorCode = 1
+
     private var readings: [ProbeReading] {
         controller.readings.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -1591,7 +1595,7 @@ private struct InspectorView: View {
                 VStack(alignment: .leading) {
                     Text("Read-only protocol inspector").font(.headline)
                     Text(
-                        "Queries all safe no-argument values found in the APK. Unsupported commands are shown with their device error code."
+                        "Queries all safe no-argument values found in the APK. Commands this model does not have are shown as not supported; other failures show their device error code."
                     )
                     .font(.caption).foregroundStyle(.secondary)
                 }
@@ -1609,6 +1613,12 @@ private struct InspectorView: View {
                     Spacer()
                     if reading.errorCode == 0 {
                         Text(reading.value).monospaced().textSelection(.enabled)
+                    } else if reading.errorCode == Self.unsupportedErrorCode {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("—").monospaced().foregroundStyle(.secondary)
+                            Text("not supported").font(.caption).italic().foregroundStyle(.tertiary)
+                        }
+                        .help("Device error \(reading.errorCode): this model does not have the command")
                     } else {
                         Text("error \(reading.errorCode)").foregroundStyle(.red).monospaced()
                     }
