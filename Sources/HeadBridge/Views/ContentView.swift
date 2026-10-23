@@ -852,7 +852,7 @@ private struct BWConnectionView: View {
                         Picker("Headphones", selection: $controller.selectedPeripheralID) {
                             Text("Select device").tag(Optional<UUID>.none)
                             ForEach(controller.peripherals) { item in
-                                Text(item.name).tag(Optional(item.id))
+                                Text(controller.pickerLabel(for: item)).tag(Optional(item.id))
                             }
                         }
                     }
@@ -1558,7 +1558,6 @@ private struct ControlsView: View {
                         set: { set(Int($0.rounded())) }
                     ),
                     in: -60...60,
-                    step: 1,
                     onEditingChanged: { editing in if !editing { commit() } }
                 )
                 Text(String(format: "%+d", value))

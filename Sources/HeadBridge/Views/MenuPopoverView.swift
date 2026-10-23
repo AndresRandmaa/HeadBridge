@@ -592,7 +592,7 @@ struct MenuPopoverView: View {
                         Picker("Headphones", selection: $controller.selectedPeripheralID) {
                             Text("Select headphones…").tag(nil as UUID?)
                             ForEach(controller.peripherals) { peripheral in
-                                Text(peripheral.name)
+                                Text(controller.pickerLabel(for: peripheral))
                                     .tag(Optional(peripheral.id))
                             }
                         }
@@ -648,7 +648,6 @@ struct MenuPopoverView: View {
                     set: { set(Int($0.rounded())) }
                 ),
                 in: -60...60,
-                step: 1,
                 onEditingChanged: { editing in if !editing { commit() } }
             )
             Text(String(format: "%+d", value))
